@@ -2,7 +2,7 @@
 //! neighbors discovered on them.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// One local interface, as returned by [`crate::Client::interfaces`].
 ///
@@ -24,7 +24,7 @@ pub struct InterfaceDetails {
     pub mac_address: [u8; 6],
     /// The chassis lldpd advertises as *us* on this interface (i.e. what a
     /// neighbor would see if it looked back at this machine).
-    pub local_chassis: Option<Rc<Chassis>>,
+    pub local_chassis: Option<Arc<Chassis>>,
     pub neighbors: Vec<Neighbor>,
 }
 
@@ -33,10 +33,14 @@ pub struct InterfaceDetails {
 /// `chassis` is reference-counted because lldpd deduplicates chassis
 /// internally: two neighbor entries reached via different protocols (say,
 /// LLDP and CDP) but originating from the same physical device share one
-/// `Chassis`.
+/// `Chassis`. It's an `Arc` rather than a plain `Rc` so that values
+/// containing a `Neighbor` (e.g. `Vec<InterfaceDetails>`) stay `Send` -
+/// needed to `.await` calls that return them from inside a `Send`-bound
+/// future (an `#[async_trait]` method, a `tokio::spawn`ed task, ...), which
+/// is the whole point of this crate's `tokio`-feature async API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Neighbor {
-    pub chassis: Rc<Chassis>,
+    pub chassis: Arc<Chassis>,
     pub port_id_subtype: PortIdSubtype,
     /// Raw port identifier bytes; interpretation depends on `port_id_subtype`
     /// (e.g. 6 raw bytes for `MacAddress`, a printable string for `IfName`).

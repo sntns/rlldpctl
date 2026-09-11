@@ -4,7 +4,7 @@
 //! chunks appear on the wire - see the module docs on [`super`].
 
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::model::{
@@ -24,7 +24,7 @@ use super::raw::{
 /// same object twice (several neighbor ports, reached via different
 /// protocols, pointing at one physical chassis) - see `marshal.c`'s `refs`
 /// list. Keyed by the sender's raw pointer field value (its "dummy" id).
-type ChassisCache = HashMap<usize, Rc<Chassis>>;
+type ChassisCache = HashMap<usize, Arc<Chassis>>;
 
 pub(crate) fn decode_interfaces(payload: &[u8]) -> Result<Vec<Interface>> {
     let mut cursor = Cursor::new(payload);
@@ -144,7 +144,7 @@ fn discard_pi_chain(cursor: &mut Cursor) -> Result<()> {
 /// every neighbor entry (`h_rports`, pointer-chained) - both are the same C
 /// type and are marshaled the same way from this point on.
 struct PortFields {
-    chassis: Option<Rc<Chassis>>,
+    chassis: Option<Arc<Chassis>>,
     id: Option<Vec<u8>>,
     description: Option<String>,
 }
@@ -159,7 +159,7 @@ fn decode_port_fields(
     } else if let Some(cached) = chassis_cache.get(&raw.p_chassis) {
         Some(cached.clone())
     } else {
-        let decoded = Rc::new(decode_chassis(cursor)?);
+        let decoded = Arc::new(decode_chassis(cursor)?);
         chassis_cache.insert(raw.p_chassis, decoded.clone());
         Some(decoded)
     };
@@ -595,7 +595,7 @@ mod tests {
 
         let details = decode_hardware(&buf.into_vec()).unwrap();
         assert_eq!(details.neighbors.len(), 2);
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             &details.neighbors[0].chassis,
             &details.neighbors[1].chassis
         ));

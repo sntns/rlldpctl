@@ -148,6 +148,29 @@ async fn read_message(stream: &mut UnixStream, expected: HmsgType) -> Result<Vec
     Ok(payload)
 }
 
+/// Compile-time regression guard: every `AsyncClient`/`AsyncSubscription`
+/// method's future must stay `Send`, since real callers embed them in
+/// `Send`-bound contexts (a `tokio::spawn`ed task, an `#[async_trait]`
+/// method's return type, ...) - that's the entire point of this crate having
+/// an async API at all. This function is never called; it exists purely so
+/// that `cargo build --features tokio` fails to compile if a future
+/// regresses back to non-`Send` (as `all_interfaces`'s once did, by
+/// accumulating `Rc`-holding values across its own internal awaits before
+/// `Neighbor::chassis` became an `Arc` - see `model.rs`).
+#[allow(dead_code)]
+fn assert_futures_are_send() {
+    fn is_send<T: Send>(_: T) {}
+    fn check(mut client: AsyncClient, mut subscription: AsyncSubscription) {
+        is_send(AsyncClient::connect());
+        is_send(client.interfaces());
+        is_send(client.interface("eth0"));
+        is_send(client.all_interfaces());
+        is_send(subscription.next_change());
+        is_send(client.subscribe());
+    }
+    let _ = check;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
