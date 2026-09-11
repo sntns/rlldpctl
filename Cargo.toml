@@ -9,6 +9,15 @@ keywords = ["lldp", "lldpd", "networking", "discovery"]
 categories = ["network-programming", "api-bindings"]
 readme = "README.md"
 
+[package.metadata.release]
+sign-commit = false
+push = true
+publish = true
+allow-branch = ["main"]
+pre-release-commit-message = "Release {{version}}"
+tag-message = "Release {{version}}"
+tag-name = "v{{version}}"
+
 [features]
 default = []
 # Adds AsyncClient/AsyncSubscription, backed by tokio::net::UnixStream.
