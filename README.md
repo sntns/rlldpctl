@@ -1,5 +1,10 @@
 # rlldpctl
 
+[![CI](https://github.com/sntns/rlldpctl/actions/workflows/ci.yml/badge.svg)](https://github.com/sntns/rlldpctl/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/rlldpctl.svg)](https://crates.io/crates/rlldpctl)
+[![docs.rs](https://img.shields.io/docsrs/rlldpctl)](https://docs.rs/rlldpctl)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A pure-Rust client for [`lldpd`](https://lldpd.github.io/)'s control socket:
 list interfaces and read discovered LLDP neighbors without shelling out to
 `lldpcli` or linking `liblldpctl.so`.
