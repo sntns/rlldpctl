@@ -26,6 +26,30 @@ cargo run --example show_neighbors [socket-path]
 cargo run --example watch_neighbors [socket-path]  # live feed via SUBSCRIBE
 ```
 
+An async equivalent, `AsyncClient`/`AsyncSubscription` (backed by
+`tokio::net::UnixStream`), is available behind the `tokio` feature:
+
+```toml
+rlldpctl = { version = "0.1", features = ["tokio"] }
+```
+
+```rust
+let mut client = rlldpctl::AsyncClient::connect().await?;
+for iface in client.interfaces().await? {
+    let details = client.interface(&iface.name).await?;
+    // ...
+}
+```
+
+```sh
+cargo run --example show_neighbors_async --features tokio [socket-path]
+cargo run --example watch_neighbors_async --features tokio [socket-path]
+```
+
+The sync API has no tokio dependency at all with the feature off - this is
+purely additive, and both share the exact same encode/decode logic
+(`src/wire`), only the socket I/O differs.
+
 ## Why this exists, and why it's fragile
 
 `lldpd` does not define a stable IPC protocol for `lldpcli`/`liblldpctl` to
@@ -81,13 +105,17 @@ v1 implements four requests: `GET_INTERFACES` (list interfaces),
 `GET_INTERFACE` (one interface's local info + discovered neighbors), and
 `SUBSCRIBE`/`NOTIFICATION` (a live feed of neighbor changes via
 `Client::subscribe`, which returns an `Iterator<Item = Result<NeighborChange>>`
-- see `examples/watch_neighbors.rs`). Subscribing consumes the `Client`: the
-protocol doesn't allow more `GET_INTERFACES`/`GET_INTERFACE` calls on a
-connection once it starts pushing notifications, so open a second `Client` if
-you need both. Chassis name/description/capabilities/management addresses and
-LLDP-MED inventory TLVs are decoded; per-port VLAN/PPVID/PI TLVs are walked
-(for correct byte accounting) but not yet surfaced in the model. Nothing that
-changes daemon state (`SET_PORT`, `SET_CONFIG`, ...) is implemented.
+- see `examples/watch_neighbors.rs`; or `AsyncClient::subscribe` +
+`AsyncSubscription::next_change` behind the `tokio` feature). Subscribing
+consumes the client: the protocol doesn't allow more
+`GET_INTERFACES`/`GET_INTERFACE` calls on a connection once it starts pushing
+notifications, so open a second client if you need both. Chassis
+name/description/capabilities/management addresses and LLDP-MED inventory
+TLVs are decoded; per-port VLAN/PPVID/PI TLVs are walked (for correct byte
+accounting) but not yet surfaced in the model. Nothing that changes daemon
+state (`SET_PORT`, `SET_CONFIG`, ...) is implemented. `AsyncSubscription` is a
+plain `async fn next_change`, not a `futures::Stream` - wrap it with
+`futures::stream::unfold` yourself if you want one.
 
 ## Testing
 
@@ -107,13 +135,19 @@ changes daemon state (`SET_PORT`, `SET_CONFIG`, ...) is implemented.
 - `tests/integration.rs` drives the public `Client` API over a real Unix
   socket against a hand-rolled fake `lldpd`, independently of the crate's
   own encoder.
-- `examples/show_neighbors.rs` and `examples/watch_neighbors.rs` talk to a
-  real, running `lldpd` - not run in CI, but useful for a manual sanity check
-  on real hardware.
+- `src/async_client.rs` mirrors the sync transport tests (`request`,
+  rejection, clean-close) with `#[tokio::test]`, and
+  `tests/async_integration.rs` mirrors the black-box socket test - both
+  compile to nothing without `--features tokio`.
+- `examples/show_neighbors.rs`/`examples/watch_neighbors.rs` and their
+  `_async` counterparts talk to a real, running `lldpd` - not run in CI, but
+  useful for a manual sanity check on real hardware.
 
 ```sh
 cargo test
+cargo test --features tokio
 cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features tokio -- -D warnings
 cargo fmt -- --check
 ```
 

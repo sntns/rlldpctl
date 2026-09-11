@@ -17,14 +17,20 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
-      - name: Run Clippy
+      - name: Run Clippy (default features)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Run tests
+      - name: Run Clippy (tokio feature)
+        run: cargo clippy --all-targets --features tokio -- -D warnings
+
+      - name: Run tests (default features)
         run: cargo test --all
+
+      - name: Run tests (tokio feature)
+        run: cargo test --all --features tokio
 
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
 
       - name: Run tarpaulin
-        run: cargo tarpaulin --out Xml
+        run: cargo tarpaulin --features tokio --out Xml

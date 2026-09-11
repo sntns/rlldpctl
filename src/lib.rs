@@ -70,7 +70,18 @@
 //! `SUBSCRIBE`/`NOTIFICATION` (a live feed of neighbor changes, via
 //! [`Client::subscribe`] and [`Subscription`]). Nothing that changes daemon
 //! state (`SET_PORT`, `SET_CONFIG`, ...) is implemented.
+//!
+//! ## Async
+//!
+//! Enable the `tokio` feature for `AsyncClient`/`AsyncSubscription`, the
+//! same API backed by `tokio::net::UnixStream` instead of
+//! `std::os::unix::net::UnixStream`. Both share this crate's wire
+//! encode/decode logic verbatim - only the I/O differs - so they can't
+//! disagree about the wire format. This is entirely additive: the sync API
+//! has no tokio dependency and keeps working with the `tokio` feature off.
 
+#[cfg(feature = "tokio")]
+mod async_client;
 mod client;
 mod error;
 mod model;
@@ -78,6 +89,8 @@ mod subscription;
 mod transport;
 mod wire;
 
+#[cfg(feature = "tokio")]
+pub use async_client::{AsyncClient, AsyncSubscription};
 pub use client::{Client, DEFAULT_SOCKET_PATH};
 pub use error::{Error, Result};
 pub use model::{

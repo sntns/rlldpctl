@@ -25,14 +25,14 @@ pub enum HmsgType {
 }
 
 impl HmsgType {
-    fn matches(self, got: i32) -> bool {
+    pub(crate) fn matches(self, got: i32) -> bool {
         self as i32 == got
     }
 }
 
 /// Same constant as upstream's `HMSG_MAX_SIZE` (`1 << 19`, i.e. 512 KiB) - the
 /// daemon refuses to build (and we refuse to trust) anything larger.
-const HMSG_MAX_SIZE: usize = 1 << 19;
+pub(crate) const HMSG_MAX_SIZE: usize = 1 << 19;
 
 /// Width of `size_t`/pointers on this machine. lldpd's control protocol
 /// memcpy's its C structures as-is, so this crate is only correct when built
@@ -42,7 +42,7 @@ const PTR_SIZE: usize = std::mem::size_of::<usize>();
 
 /// Size in bytes of `struct hmsg_header` on this target: a 4-byte `enum`,
 /// padded up to `PTR_SIZE`, followed by a `size_t`.
-fn header_len() -> usize {
+pub(crate) fn header_len() -> usize {
     align_up(4, PTR_SIZE) + PTR_SIZE
 }
 
@@ -52,7 +52,7 @@ pub(crate) fn align_up(len: usize, align: usize) -> usize {
     len + (align - len % align) % align
 }
 
-fn encode_header(ty: HmsgType, payload_len: usize) -> Vec<u8> {
+pub(crate) fn encode_header(ty: HmsgType, payload_len: usize) -> Vec<u8> {
     let mut buf = vec![0u8; header_len()];
     buf[0..4].copy_from_slice(&(ty as i32).to_ne_bytes());
     // Bytes [4..align_up(4, PTR_SIZE)) are C struct padding, left at zero.
@@ -62,7 +62,7 @@ fn encode_header(ty: HmsgType, payload_len: usize) -> Vec<u8> {
     buf
 }
 
-fn decode_header(buf: &[u8]) -> (i32, usize) {
+pub(crate) fn decode_header(buf: &[u8]) -> (i32, usize) {
     let ty = i32::from_ne_bytes(buf[0..4].try_into().unwrap());
     let len_off = align_up(4, PTR_SIZE);
     let mut len_bytes = [0u8; 8];

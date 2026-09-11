@@ -9,7 +9,22 @@ keywords = ["lldp", "lldpd", "networking", "discovery"]
 categories = ["network-programming", "api-bindings"]
 readme = "README.md"
 
+[features]
+default = []
+# Adds AsyncClient/AsyncSubscription, backed by tokio::net::UnixStream.
+tokio = ["dep:tokio"]
+
 [dependencies]
 thiserror = "2.0"
+tokio = { version = "1", optional = true, features = ["net", "io-util"] }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[[example]]
+name = "show_neighbors_async"
+required-features = ["tokio"]
+
+[[example]]
+name = "watch_neighbors_async"
+required-features = ["tokio"]
