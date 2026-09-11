@@ -23,6 +23,7 @@ Run it live against a real daemon with:
 
 ```sh
 cargo run --example show_neighbors [socket-path]
+cargo run --example watch_neighbors [socket-path]  # live feed via SUBSCRIBE
 ```
 
 ## Why this exists, and why it's fragile
@@ -76,13 +77,17 @@ C API, or shelling out to `lldpcli -f json`.
 
 ## Scope
 
-v1 implements exactly two requests: `GET_INTERFACES` (list interfaces) and
-`GET_INTERFACE` (one interface's local info + discovered neighbors). Chassis
-name/description/capabilities/management addresses and LLDP-MED inventory
-TLVs are decoded; per-port VLAN/PPVID/PI TLVs are walked (for correct byte
-accounting) but not yet surfaced in the model. Nothing that changes daemon
-state (`SET_PORT`, `SET_CONFIG`, ...) or streams live updates (`SUBSCRIBE`) is
-implemented.
+v1 implements four requests: `GET_INTERFACES` (list interfaces),
+`GET_INTERFACE` (one interface's local info + discovered neighbors), and
+`SUBSCRIBE`/`NOTIFICATION` (a live feed of neighbor changes via
+`Client::subscribe`, which returns an `Iterator<Item = Result<NeighborChange>>`
+- see `examples/watch_neighbors.rs`). Subscribing consumes the `Client`: the
+protocol doesn't allow more `GET_INTERFACES`/`GET_INTERFACE` calls on a
+connection once it starts pushing notifications, so open a second `Client` if
+you need both. Chassis name/description/capabilities/management addresses and
+LLDP-MED inventory TLVs are decoded; per-port VLAN/PPVID/PI TLVs are walked
+(for correct byte accounting) but not yet surfaced in the model. Nothing that
+changes daemon state (`SET_PORT`, `SET_CONFIG`, ...) is implemented.
 
 ## Testing
 
@@ -92,11 +97,19 @@ implemented.
   with a chassis and a management address, and the chassis-deduplication
   path (two neighbor ports sharing one chassis pointer, as `lldpd` does for
   a device seen via more than one discovery protocol).
+- `src/wire/decode.rs` also covers `NOTIFICATION` decoding: a deleted-neighbor
+  event with no attached port data, and an added-neighbor event with a full
+  chassis.
+- `src/subscription.rs` unit-tests `Subscription`'s `Iterator` impl against a
+  socket pair: a clean peer close ends iteration (`None`), while a
+  well-framed-but-undecodable message surfaces as `Some(Err(_))` without
+  ending it.
 - `tests/integration.rs` drives the public `Client` API over a real Unix
   socket against a hand-rolled fake `lldpd`, independently of the crate's
   own encoder.
-- `examples/show_neighbors.rs` talks to a real, running `lldpd` - not run in
-  CI, but useful for a manual sanity check on real hardware.
+- `examples/show_neighbors.rs` and `examples/watch_neighbors.rs` talk to a
+  real, running `lldpd` - not run in CI, but useful for a manual sanity check
+  on real hardware.
 
 ```sh
 cargo test

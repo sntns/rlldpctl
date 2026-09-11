@@ -9,14 +9,15 @@ use std::rc::Rc;
 use crate::error::{Error, Result};
 use crate::model::{
     Capabilities, Chassis, Interface, InterfaceDetails, ManagementAddress, MedInventory, Neighbor,
+    NeighborChange,
 };
 
 use super::cursor::{
     consume_substruct_marker, read_chunk_pod, read_opt_bytes, read_opt_cstring, Cursor,
 };
 use super::raw::{
-    RawChassis, RawHardware, RawInterface, RawInterfaceList, RawMedLoc, RawMgmt, RawPi, RawPort,
-    RawPpvid, RawVlan,
+    RawChassis, RawHardware, RawInterface, RawInterfaceList, RawMedLoc, RawMgmt, RawNeighborChange,
+    RawPi, RawPort, RawPpvid, RawVlan,
 };
 
 /// Chassis pointers are the one place lldpd's wire format can reference the
@@ -197,21 +198,33 @@ fn decode_neighbor_chain(
     } else {
         Vec::new()
     };
-    let fields = decode_port_fields(cursor, &raw, chassis_cache)?;
+    let mut out = vec![build_neighbor(cursor, &raw, chassis_cache)?];
+    out.extend(rest);
+    Ok(out)
+}
+
+/// Finishes decoding one already-chunk-read `lldpd_port` into a [`Neighbor`]:
+/// reads its remaining fields (chassis, id, description, ...) and requires a
+/// chassis to be present, since a neighbor entry without one would be a
+/// protocol invariant violation on lldpd's side.
+fn build_neighbor(
+    cursor: &mut Cursor,
+    raw: &RawPort,
+    chassis_cache: &mut ChassisCache,
+) -> Result<Neighbor> {
+    let fields = decode_port_fields(cursor, raw, chassis_cache)?;
     let Some(chassis) = fields.chassis else {
         return Err(Error::Protocol(
             "neighbor port has no associated chassis".into(),
         ));
     };
-    let mut out = vec![Neighbor {
+    Ok(Neighbor {
         chassis,
         port_id_subtype: raw.p_id_subtype.into(),
         port_id: fields.id.unwrap_or_default(),
         port_description: fields.description,
         ttl: raw.p_ttl,
-    }];
-    out.extend(rest);
-    Ok(out)
+    })
 }
 
 pub(crate) fn decode_hardware(payload: &[u8]) -> Result<InterfaceDetails> {
@@ -251,11 +264,47 @@ pub(crate) fn decode_hardware(payload: &[u8]) -> Result<InterfaceDetails> {
     })
 }
 
+/// `NOTIFICATION`'s payload: `lldpd_neighbor_change`. Its `neighbor` is a
+/// `pointer`-kind field (unlike `h_lport`'s embedded `substruct`), so it gets
+/// a real chunk of its own - but `src/daemon/event.c`'s `levent_ctl_notify`
+/// explicitly zeroes the port's `p_entries` before serializing it (to avoid
+/// dragging the rest of that interface's neighbor list along), so we can
+/// assert it's never chained the way a `GET_INTERFACE` neighbor list is.
+pub(crate) fn decode_neighbor_change(payload: &[u8]) -> Result<NeighborChange> {
+    let mut cursor = Cursor::new(payload);
+    let raw: RawNeighborChange = read_chunk_pod(&mut cursor)?;
+    let interface = read_opt_cstring(&mut cursor, raw.ifname)?.unwrap_or_default();
+    let interface_alias = read_opt_cstring(&mut cursor, raw.ifalias)?;
+
+    let neighbor = if raw.neighbor == 0 {
+        None
+    } else {
+        let port_raw: RawPort = read_chunk_pod(&mut cursor)?;
+        if port_raw.tqe_next != 0 {
+            return Err(Error::Protocol(
+                "notified neighbor unexpectedly chained to another port".into(),
+            ));
+        }
+        let mut chassis_cache = ChassisCache::new();
+        Some(build_neighbor(&mut cursor, &port_raw, &mut chassis_cache)?)
+    };
+
+    Ok(NeighborChange {
+        interface,
+        interface_alias,
+        kind: raw.state.into(),
+        neighbor,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::NeighborChangeKind;
     use crate::model::{ChassisIdSubtype, PortIdSubtype};
-    use crate::wire::raw::{RawHardware, RawInterface, RawInterfaceList, RawPort};
+    use crate::wire::raw::{
+        RawHardware, RawInterface, RawInterfaceList, RawNeighborChange, RawPort,
+    };
 
     /// Reinterprets a `#[repr(C)]` `Raw*` value as its own wire bytes - the
     /// exact inverse of [`super::super::cursor::read_pod`], so a test can
@@ -557,5 +606,78 @@ mod tests {
     fn decode_hardware_rejects_truncated_payload() {
         let err = decode_hardware(&[0u8; 4]).unwrap_err();
         assert!(matches!(err, Error::Protocol(_)));
+    }
+
+    #[test]
+    fn decode_neighbor_change_deleted_with_no_port_data() {
+        let mut buf = Buf::default();
+        buf.chunk_pod(
+            1,
+            &RawNeighborChange {
+                ifname: 100,
+                ifalias: 0,
+                state: -1,
+                neighbor: 0,
+            },
+        );
+        buf.cstring(100, "eth0");
+
+        let change = decode_neighbor_change(&buf.into_vec()).unwrap();
+        assert_eq!(change.interface, "eth0");
+        assert_eq!(change.interface_alias, None);
+        assert_eq!(change.kind, NeighborChangeKind::Deleted);
+        assert!(change.neighbor.is_none());
+    }
+
+    #[test]
+    fn decode_neighbor_change_added_with_full_neighbor() {
+        let mut buf = Buf::default();
+        buf.chunk_pod(
+            1,
+            &RawNeighborChange {
+                ifname: 100,
+                ifalias: 0,
+                state: 1,
+                neighbor: 200,
+            },
+        );
+        buf.cstring(100, "eth0");
+        // The notified port's own p_entries is zeroed by lldpd before
+        // serializing (see decode_neighbor_change's doc comment), so
+        // tqe_next is 0 here - never a chain.
+        buf.chunk_pod(
+            200,
+            &RawPort {
+                p_chassis: 300,
+                p_id_subtype: 5,
+                p_id: 400,
+                p_ttl: 90,
+                ..empty_port()
+            },
+        );
+        buf.chunk_pod(
+            300,
+            &RawChassis {
+                c_id_subtype: 6,
+                c_id: 500,
+                c_name: 600,
+                ..Default::default()
+            },
+        );
+        buf.chunk(500, b"switch-x");
+        buf.cstring(600, "switch-x-name");
+        buf.chunk(400, b"eth5");
+        buf.marker(700);
+        buf.marker(701);
+        buf.marker(702);
+
+        let change = decode_neighbor_change(&buf.into_vec()).unwrap();
+        assert_eq!(change.interface, "eth0");
+        assert_eq!(change.kind, NeighborChangeKind::Added);
+        let neighbor = change.neighbor.unwrap();
+        assert_eq!(neighbor.ttl, 90);
+        assert_eq!(neighbor.port_id, b"eth5");
+        assert_eq!(neighbor.chassis.id, b"switch-x");
+        assert_eq!(neighbor.chassis.name.as_deref(), Some("switch-x-name"));
     }
 }

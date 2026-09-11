@@ -23,7 +23,7 @@ mod cursor;
 mod decode;
 pub(crate) mod raw;
 
-pub(crate) use decode::{decode_hardware, decode_interfaces};
+pub(crate) use decode::{decode_hardware, decode_interfaces, decode_neighbor_change};
 
 /// Encodes the payload for a `GET_INTERFACE` request: a single chunk holding
 /// the interface name as a null-terminated string (mirrors

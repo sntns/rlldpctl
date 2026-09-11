@@ -283,6 +283,17 @@ pub struct RawHardware {
     pub h_tx_fast: i32,
 }
 
+/// `struct lldpd_neighbor_change`: payload of a `NOTIFICATION` message,
+/// pushed unprompted once a client has subscribed (`SUBSCRIBE`).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RawNeighborChange {
+    pub ifname: usize,
+    pub ifalias: usize,
+    pub state: i32,
+    pub neighbor: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

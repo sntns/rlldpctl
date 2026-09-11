@@ -65,14 +65,16 @@
 //!
 //! ## Scope
 //!
-//! v1 implements exactly two requests: `GET_INTERFACES` (list interfaces)
-//! and `GET_INTERFACE` (one interface's local info + discovered neighbors).
-//! Nothing that changes daemon state (`SET_PORT`, `SET_CONFIG`, ...) or
-//! streams live updates (`SUBSCRIBE`) is implemented.
+//! v1 implements four requests: `GET_INTERFACES` (list interfaces),
+//! `GET_INTERFACE` (one interface's local info + discovered neighbors), and
+//! `SUBSCRIBE`/`NOTIFICATION` (a live feed of neighbor changes, via
+//! [`Client::subscribe`] and [`Subscription`]). Nothing that changes daemon
+//! state (`SET_PORT`, `SET_CONFIG`, ...) is implemented.
 
 mod client;
 mod error;
 mod model;
+mod subscription;
 mod transport;
 mod wire;
 
@@ -80,5 +82,6 @@ pub use client::{Client, DEFAULT_SOCKET_PATH};
 pub use error::{Error, Result};
 pub use model::{
     Capabilities, Chassis, ChassisIdSubtype, Interface, InterfaceDetails, ManagementAddress,
-    MedInventory, Neighbor, PortIdSubtype,
+    MedInventory, Neighbor, NeighborChange, NeighborChangeKind, PortIdSubtype,
 };
+pub use subscription::Subscription;

@@ -20,6 +20,8 @@ pub enum HmsgType {
     None = 0,
     GetInterfaces = 3,
     GetInterface = 6,
+    Subscribe = 9,
+    Notification = 10,
 }
 
 impl HmsgType {
@@ -79,7 +81,20 @@ pub(crate) fn request(stream: &mut UnixStream, ty: HmsgType, payload: &[u8]) -> 
     let mut out = encode_header(ty, payload.len());
     out.extend_from_slice(payload);
     stream.write_all(&out)?;
+    read_message(stream, ty)
+}
 
+/// Blocks until lldpd pushes the next `NOTIFICATION` on an already-subscribed
+/// connection (see [`crate::Subscription`]) - unlike [`request`], nothing is
+/// written first: the daemon sends these unprompted.
+pub(crate) fn recv_notification(stream: &mut UnixStream) -> Result<Vec<u8>> {
+    read_message(stream, HmsgType::Notification)
+}
+
+/// Reads one framed message and returns its payload, checking it against
+/// `expected` the same way for both a request's reply and an unprompted
+/// notification.
+fn read_message(stream: &mut UnixStream, expected: HmsgType) -> Result<Vec<u8>> {
     let mut header = vec![0u8; header_len()];
     stream.read_exact(&mut header)?;
     let (got_ty, len) = decode_header(&header);
@@ -102,9 +117,9 @@ pub(crate) fn request(stream: &mut UnixStream, ty: HmsgType, payload: &[u8]) -> 
         // `src/daemon/client.c` upstream.
         return Err(Error::RequestRejected);
     }
-    if !ty.matches(got_ty) {
+    if !expected.matches(got_ty) {
         return Err(Error::UnexpectedMessageType {
-            expected: ty as i32 as u32,
+            expected: expected as i32 as u32,
             got: got_ty as u32,
         });
     }

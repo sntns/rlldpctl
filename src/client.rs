@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 use crate::model::{Interface, InterfaceDetails};
+use crate::subscription::Subscription;
 use crate::transport::{self, HmsgType};
 use crate::wire;
 
@@ -80,5 +81,22 @@ impl Client {
     /// Path this client connected to, mostly useful for logging.
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
+    }
+
+    /// Subscribes to live neighbor-change notifications (`SUBSCRIBE`),
+    /// returning a [`Subscription`] you can iterate for [`NeighborChange`]s.
+    ///
+    /// This consumes the client: lldpd's control protocol does not allow
+    /// further `GET_INTERFACES`/`GET_INTERFACE` calls on a connection once it
+    /// has subscribed (`src/lib/atom.c` upstream explicitly refuses further
+    /// requests once "watching" starts) - open a separate [`Client`] if you
+    /// still need those.
+    ///
+    /// [`NeighborChange`]: crate::NeighborChange
+    pub fn subscribe(mut self) -> Result<Subscription> {
+        transport::request(&mut self.stream, HmsgType::Subscribe, &[])?;
+        Ok(Subscription {
+            stream: self.stream,
+        })
     }
 }

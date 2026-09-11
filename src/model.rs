@@ -55,6 +55,49 @@ impl Neighbor {
     }
 }
 
+/// One neighbor-table change, as pushed by [`crate::Subscription`]
+/// (`NOTIFICATION`, after a `SUBSCRIBE`).
+///
+/// lldpd sends one of these per changed neighbor on *any* interface - the
+/// protocol has no per-interface filtering, so check `interface` yourself if
+/// you only care about some of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NeighborChange {
+    pub interface: String,
+    pub interface_alias: Option<String>,
+    pub kind: NeighborChangeKind,
+    /// The neighbor this change is about. Upstream always populates this in
+    /// practice (see `src/daemon/lldpd.c`'s three call sites of
+    /// `levent_ctl_notify`), but nothing in the protocol *requires* it, so
+    /// this stays an `Option` rather than asserting it's always present.
+    pub neighbor: Option<Neighbor>,
+}
+
+/// What happened to a neighbor entry (`NEIGHBOR_CHANGE_*` in
+/// `src/lldpd-structs.h`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NeighborChangeKind {
+    /// A new neighbor was discovered.
+    Added,
+    /// An existing neighbor's advertised information changed.
+    Updated,
+    /// A neighbor aged out or its port went down.
+    Deleted,
+    /// A value this crate doesn't have a name for.
+    Other(i32),
+}
+
+impl From<i32> for NeighborChangeKind {
+    fn from(v: i32) -> Self {
+        match v {
+            1 => Self::Added,
+            0 => Self::Updated,
+            -1 => Self::Deleted,
+            other => Self::Other(other),
+        }
+    }
+}
+
 /// A neighbor (or local) chassis: the "this whole box" identity, as opposed
 /// to one of its ports.
 #[derive(Debug, Clone, PartialEq, Eq)]
