@@ -31,10 +31,15 @@ fn pad(buf: &mut Vec<u8>) {
     buf.extend(std::iter::repeat_n(0u8, p));
 }
 
+/// Builds one chunk the way real `marshal_serialize_` output does: the
+/// declared size is the header's own length plus the content length, not
+/// just the content length (confirmed against real `lldpcli` traffic - see
+/// `src/wire/cursor.rs`'s `Cursor::chunk_header` doc comment).
 fn push_chunk(buf: &mut Vec<u8>, orig: usize, body: &[u8]) {
     pad(buf);
+    let header_len = 2 * PTR_SIZE;
     buf.extend_from_slice(&orig.to_ne_bytes());
-    buf.extend_from_slice(&body.len().to_ne_bytes());
+    buf.extend_from_slice(&(header_len + body.len()).to_ne_bytes());
     buf.extend_from_slice(body);
 }
 

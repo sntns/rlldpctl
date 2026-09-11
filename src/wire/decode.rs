@@ -328,10 +328,19 @@ mod tests {
             self.0.extend(std::iter::repeat_n(0u8, pad));
         }
 
+        /// Builds one chunk the way real `marshal_serialize_` output does:
+        /// the declared size is the header's own length plus the content
+        /// length, not just the content length - see
+        /// `wire::cursor::Cursor::chunk_header`. None of these test fixtures
+        /// nest further chunks inside a `chunk_pod`/`marker` call, so this is
+        /// exactly the declared size a real sender would produce for them
+        /// too (no need to separately account for nested content here).
         fn chunk(&mut self, orig: usize, body: &[u8]) -> &mut Self {
             self.pad();
+            let header_len = 2 * std::mem::size_of::<usize>();
             self.0.extend_from_slice(&orig.to_ne_bytes());
-            self.0.extend_from_slice(&body.len().to_ne_bytes());
+            self.0
+                .extend_from_slice(&(header_len + body.len()).to_ne_bytes());
             self.0.extend_from_slice(body);
             self
         }
@@ -414,6 +423,36 @@ mod tests {
                 Interface {
                     name: "eth1".into(),
                     alias: Some("wan".into())
+                },
+            ]
+        );
+    }
+
+    /// A real `GET_INTERFACES` response, captured with `strace` from `lldpcli`
+    /// talking to a real `lldpd` 1.0.22 on an aarch64 device (`wlan0` and
+    /// `eth0`, neither with an alias). This is what actually caught this
+    /// crate's marshal-protocol misunderstanding - `size` header fields
+    /// hand-built in the tests above happened to be internally consistent
+    /// with the (wrong) decoder, so nothing here exercised real `lldpd`
+    /// output until this was captured. Keep this as a real fixture, not
+    /// hand-built, precisely so a future regression here can't hide the same
+    /// way.
+    #[test]
+    fn decode_interfaces_matches_a_real_lldpd_capture() {
+        let payload: &[u8] = b"\x01\x00\x00\x00\x00\x00\x00\x00\xad\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x60\x0a\x14\xb3\x55\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x8d\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\xf0\x60\x6a\xdb\x7f\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x46\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x90\xb0\x13\xb3\x55\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x16\x00\x00\x00\x00\x00\x00\x00\x77\x6c\x61\x6e\x30\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x15\x00\x00\x00\x00\x00\x00\x00\x65\x74\x68\x30\x00";
+        assert_eq!(payload.len(), 173);
+
+        let result = decode_interfaces(payload).unwrap();
+        assert_eq!(
+            result,
+            vec![
+                Interface {
+                    name: "eth0".into(),
+                    alias: None
+                },
+                Interface {
+                    name: "wlan0".into(),
+                    alias: None
                 },
             ]
         );

@@ -32,15 +32,36 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
-    /// Reads one `struct marshal_serialized` chunk: skips the alignment
-    /// padding that precedes it, reads its `(orig, size)` header, and returns
-    /// `(orig, body)`, having advanced past the whole chunk.
+    /// Reads exactly `n` bytes and advances past them.
+    fn read_raw(&mut self, n: usize) -> Result<&'a [u8]> {
+        self.need(n)?;
+        let bytes = &self.buf[self.pos..self.pos + n];
+        self.pos += n;
+        Ok(bytes)
+    }
+
+    /// Skips the alignment padding that precedes a chunk, then reads its
+    /// `struct marshal_serialized` header: `(orig, size)`.
     ///
     /// `orig` is the sender's "dummy" reference id (see `marshal.c`): a small
     /// sequential integer, never zero for a real chunk, used to detect a
     /// pointer that is shared between two places in the source struct graph
     /// (in practice, only `lldpd_port.p_chassis` - see `wire::decode`).
-    pub(super) fn chunk(&mut self) -> Result<(usize, &'a [u8])> {
+    ///
+    /// `size` is **not** "how many content bytes follow" - upstream's
+    /// `marshal_serialize_` sets it to the *entire* serialized length of this
+    /// chunk, header included, plus every chunk nested inside it
+    /// (recursively, each with its own header) - see `serialized->size = len`
+    /// in `src/marshal.c`, where `len` accumulates through
+    /// `len += sublen + padlen` for every pointer/substruct field. The real
+    /// unmarshaler never uses it to skip bytes either: it walks structurally,
+    /// using its compile-time-known field layout to know how many chunks
+    /// follow and in what order. So this only returns it for chunk kinds
+    /// where it is meaningful as a length (a leaf value - see
+    /// [`Cursor::leaf`]); struct chunks ([`read_chunk_pod`]) and substructure
+    /// markers ([`consume_substruct_marker`]) read a fixed, statically-known
+    /// number of bytes instead and otherwise ignore it.
+    fn chunk_header(&mut self) -> Result<(usize, usize)> {
         let pad = align_up(self.pos, PTR_SIZE) - self.pos;
         self.pos += pad;
 
@@ -49,11 +70,22 @@ impl<'a> Cursor<'a> {
         let orig = read_native_usize(&self.buf[self.pos..self.pos + PTR_SIZE]);
         let size = read_native_usize(&self.buf[self.pos + PTR_SIZE..self.pos + header_len]);
         self.pos += header_len;
+        Ok((orig, size))
+    }
 
-        self.need(size)?;
-        let body = &self.buf[self.pos..self.pos + size];
-        self.pos += size;
-        Ok((orig, body))
+    /// Reads one *leaf* chunk (a string or fixed-length byte string, with no
+    /// chunks of its own nested inside it): its header's declared `size`
+    /// really is `header + content` here, so the content length is that
+    /// minus the header's own size.
+    fn leaf(&mut self) -> Result<(usize, &'a [u8])> {
+        let (orig, declared_size) = self.chunk_header()?;
+        let header_len = 2 * PTR_SIZE;
+        let content_len = declared_size.checked_sub(header_len).ok_or_else(|| {
+            Error::Protocol(format!(
+                "chunk declares {declared_size} bytes, smaller than its own {header_len}-byte header"
+            ))
+        })?;
+        Ok((orig, self.read_raw(content_len)?))
     }
 }
 
@@ -82,12 +114,22 @@ pub(super) fn read_pod<T: Copy>(bytes: &[u8]) -> Result<T> {
     Ok(unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) })
 }
 
-/// Reads the next chunk and interprets its body as a `T` (used for every
-/// "real", non-embedded struct: the top-level message body, and anything
-/// reached through a `pointer`-kind field).
+/// Reads the next chunk's header and interprets exactly `size_of::<T>()`
+/// bytes right after it as a `T` (used for every "real", non-embedded
+/// struct: the top-level message body, and anything reached through a
+/// `pointer`-kind field). Whatever the header's declared `size` says beyond
+/// that is this struct's own nested chunks, read separately by the caller in
+/// schema order - see [`Cursor::chunk_header`].
 pub(super) fn read_chunk_pod<T: Copy>(cursor: &mut Cursor) -> Result<T> {
-    let (_orig, body) = cursor.chunk()?;
-    read_pod(body)
+    let (_orig, declared_size) = cursor.chunk_header()?;
+    let header_len = 2 * PTR_SIZE;
+    let n = std::mem::size_of::<T>();
+    if declared_size < header_len + n {
+        return Err(Error::Protocol(format!(
+            "chunk declares {declared_size} bytes, too small for its own {header_len}-byte header plus the {n}-byte struct it contains"
+        )));
+    }
+    read_pod(cursor.read_raw(n)?)
 }
 
 /// Reads a null-terminated string chunk, if `ptr_field` (the raw pointer
@@ -103,7 +145,7 @@ pub(super) fn read_opt_cstring(cursor: &mut Cursor, ptr_field: usize) -> Result<
     if ptr_field == 0 {
         return Ok(None);
     }
-    let (_orig, body) = cursor.chunk()?;
+    let (_orig, body) = cursor.leaf()?;
     let bytes = body.strip_suffix(&[0u8]).unwrap_or(body);
     Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
 }
@@ -114,21 +156,20 @@ pub(super) fn read_opt_bytes(cursor: &mut Cursor, ptr_field: usize) -> Result<Op
     if ptr_field == 0 {
         return Ok(None);
     }
-    let (_orig, body) = cursor.chunk()?;
+    let (_orig, body) = cursor.leaf()?;
     Ok(Some(body.to_vec()))
 }
 
-/// Consumes the empty marker chunk emitted for an embedded (non-pointer)
-/// substructure (`MARSHAL_SUBSTRUCT` upstream): its scalar fields are already
-/// part of the parent's raw body, so only its own further pointer fields (if
-/// any) produce real chunks - those are read right after this by the caller.
+/// Consumes the header of the marker chunk emitted for an embedded
+/// (non-pointer) substructure (`MARSHAL_SUBSTRUCT` upstream, serialized with
+/// `skip = 1`): its own scalar fields are already part of the parent's raw
+/// body, so this chunk contributes no content of its own - only its further
+/// pointer fields (if any) produce real nested chunks, read right after this
+/// by the caller. Its declared size covers those nested chunks (see
+/// [`Cursor::chunk_header`]), not "this marker is empty", so it isn't
+/// checked here.
 pub(super) fn consume_substruct_marker(cursor: &mut Cursor) -> Result<()> {
-    let (_orig, body) = cursor.chunk()?;
-    if !body.is_empty() {
-        return Err(Error::Protocol(
-            "expected an empty substructure marker chunk".into(),
-        ));
-    }
+    cursor.chunk_header()?;
     Ok(())
 }
 
@@ -136,9 +177,13 @@ pub(super) fn consume_substruct_marker(cursor: &mut Cursor) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// Builds a *leaf* chunk (matching real `marshal_serialize_` output):
+    /// the declared `size` is the header's own length plus the content
+    /// length, not just the content length - see [`Cursor::chunk_header`].
     fn chunk_bytes(orig: usize, body: &[u8]) -> Vec<u8> {
+        let header_len = 2 * PTR_SIZE;
         let mut out = orig.to_ne_bytes().to_vec();
-        out.extend_from_slice(&body.len().to_ne_bytes());
+        out.extend_from_slice(&(header_len + body.len()).to_ne_bytes());
         out.extend_from_slice(body);
         out
     }
@@ -147,7 +192,7 @@ mod tests {
     fn reads_a_single_chunk() {
         let buf = chunk_bytes(1, b"hi");
         let mut c = Cursor::new(&buf);
-        let (orig, body) = c.chunk().unwrap();
+        let (orig, body) = c.leaf().unwrap();
         assert_eq!(orig, 1);
         assert_eq!(body, b"hi");
     }
@@ -164,9 +209,9 @@ mod tests {
         padded.extend_from_slice(&second);
 
         let mut c = Cursor::new(&padded);
-        let (orig1, body1) = c.chunk().unwrap();
+        let (orig1, body1) = c.leaf().unwrap();
         assert_eq!((orig1, body1), (1, &b"x"[..]));
-        let (orig2, body2) = c.chunk().unwrap();
+        let (orig2, body2) = c.leaf().unwrap();
         assert_eq!((orig2, body2), (2, &b"second"[..]));
     }
 
@@ -189,6 +234,6 @@ mod tests {
     #[test]
     fn truncated_message_is_a_protocol_error() {
         let mut c = Cursor::new(&[0u8; 3]);
-        assert!(c.chunk().is_err());
+        assert!(c.leaf().is_err());
     }
 }
