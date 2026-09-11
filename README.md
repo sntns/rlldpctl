@@ -37,10 +37,25 @@ relevant structs directly (`src/wire/raw.rs`), rather than linking
 
 That means it's coupled to, and only known to work with:
 
-- **`lldpd` 1.0.22 exactly** - the version this crate's structs were taken
-  from (matching this workspace's Yocto-packaged `lldpd`). A different
-  release can and does change these structs, which would silently desync
-  parsing rather than fail loudly.
+- **A narrow `lldpd` version window - narrower than you'd expect.** Diffing
+  `src/lldpd-structs.h` across every tag from `0.9.0` (2008-ish) to `master`
+  shows the framing and marshaling *mechanism* has been untouched that whole
+  time, but several fields this crate actually reads are recent additions:
+
+  | Version    | Change                                                              |
+  |------------|----------------------------------------------------------------------|
+  | `< 1.0.14` | no `SET_CHASSIS` in the `hmsg_type` enum -> `GET_INTERFACE` is `5`, not `6` |
+  | `< 1.0.20` | no `lldpd_port.p_vlan_advertise_pattern`                            |
+  | `< 1.0.21` | no `lldpd_interface.alias` / `lldpd_hardware.h_ifalias`             |
+  | `master`   | unreleased `lldpd_hardware.h_flags_previous` added after `1.0.22`  |
+
+  Net effect: **this crate is verified against `lldpd` 1.0.21 and 1.0.22
+  only** (matching this workspace's Yocto-packaged `1.0.22`) - not "any
+  1.0.x", and not yet whatever ships after `1.0.22`. Sending our hardcoded
+  `GET_INTERFACE = 6` to anything older than `1.0.14` doesn't even fail
+  loudly: the daemon just answers a different request (`GET_DEFAULT_PORT`)
+  instead. A struct layout mismatch below `1.0.21` would desync parsing the
+  same way.
 - **The build-time feature flags `lldpd` was compiled with.** Several struct
   fields only exist under `ENABLE_DOT1` / `ENABLE_DOT3` / `ENABLE_LLDPMED` /
   `ENABLE_CUSTOM`. This crate assumes `dot1`, `dot3`, `cdp`, `fdp` and

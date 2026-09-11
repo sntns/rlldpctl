@@ -30,10 +30,21 @@
 //! with a small pointer-graph-following envelope around them (see
 //! `src/marshal.c` and `src/ctl.c` upstream). It is coupled to:
 //!
-//! - **The exact `lldpd` version.** This crate mirrors the struct layouts of
-//!   upstream tag `1.0.22` (matching this workspace's Yocto-packaged
-//!   version). A different `lldpd` release can and does change these
-//!   structs, which would silently desync parsing.
+//! - **The exact `lldpd` version - and this is a narrower window than you'd
+//!   guess.** Diffing `src/lldpd-structs.h` across every tag from `0.9.0` to
+//!   `master` shows the framing and marshaling *mechanism* has been stable
+//!   since 2008, but several fields this crate actually reads are recent:
+//!   `lldpd_interface.alias` and `lldpd_hardware.h_ifalias` were only added
+//!   in **`1.0.21`**, `lldpd_port.p_vlan_advertise_pattern` in `1.0.20`, and
+//!   the `hmsg_type` enum gained a new member at `1.0.14` that shifts
+//!   `GET_INTERFACE`'s numeric value from 5 to 6 (sending 6 to an older
+//!   daemon would silently hit `GET_DEFAULT_PORT` instead). `master` has
+//!   already added an unreleased `lldpd_hardware.h_flags_previous` field on
+//!   top of `1.0.22`. Net effect: **this crate is only verified against
+//!   `lldpd` 1.0.21-1.0.22** (matching this workspace's Yocto-packaged
+//!   `1.0.22`) - not "any 1.0.x", and not yet whatever ships after `1.0.22`.
+//!   A different version can and does change these structs, which would
+//!   silently desync parsing rather than fail loudly.
 //! - **The build-time feature flags `lldpd` was compiled with.** Several
 //!   struct fields exist only under `#ifdef ENABLE_DOT1` /
 //!   `ENABLE_DOT3` / `ENABLE_LLDPMED` / `ENABLE_CUSTOM`. This crate assumes
