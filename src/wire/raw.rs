@@ -19,6 +19,12 @@
 //! project's Yocto recipe (`PACKAGECONFIG ??= "cdp fdp edp sonmp lldpmed dot1
 //! dot3"`, i.e. `custom` off). A build with different `PACKAGECONFIG` flags
 //! changes these struct layouts and this crate would need matching variants.
+//!
+//! [`RawHardware`]/[`RawHardwareWithFlagsPrevious`] are the one place two
+//! variants of the same C struct exist here: `GET_INTERFACE`'s top-level
+//! struct has actually changed shape between `1.0.22` and `master` (see
+//! [`RawHardwareWithFlagsPrevious`]'s doc comment), and with no version
+//! negotiation on the wire, `decode_hardware` tries both.
 
 /// `struct lldpd_mgmt` (a management address, member of a chassis).
 #[repr(C)]
@@ -240,7 +246,12 @@ pub struct RawInterfaceList {
     pub tqh_last: usize,
 }
 
-/// `struct lldpd_hardware`: response to `GET_INTERFACE`.
+/// `struct lldpd_hardware`: response to `GET_INTERFACE`, as laid out by every
+/// tagged release up to and including `1.0.22`.
+///
+/// [`decode_hardware`](super::decode::decode_hardware) tries this layout
+/// first and falls back to [`RawHardwareWithFlagsPrevious`] if it doesn't
+/// parse - see that type's doc comment for why there are two.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct RawHardware {
@@ -255,6 +266,63 @@ pub struct RawHardware {
     pub h_timer: usize,
     pub h_mtu: i32,
     pub h_flags: i32,
+    pub h_ifindex: i32,
+    pub h_ifindex_changed: i32,
+    pub h_ifname: [u8; 16], // IFNAMSIZ
+    pub h_ifalias: usize,
+    pub h_lladdr: [u8; 6], // ETHER_ADDR_LEN
+    pub h_tx_cnt: u64,
+    pub h_rx_cnt: u64,
+    pub h_rx_discarded_cnt: u64,
+    pub h_rx_unrecognized_cnt: u64,
+    pub h_ageout_cnt: u64,
+    pub h_insert_cnt: u64,
+    pub h_delete_cnt: u64,
+    pub h_drop_cnt: u64,
+    pub h_lport_previous: usize,
+    pub h_lport_previous_len: isize,
+    pub h_lchassis_previous_id_subtype: u8,
+    pub h_lchassis_previous_id: usize,
+    pub h_lchassis_previous_id_len: i32,
+    pub h_lport_previous_id_subtype: u8,
+    pub h_lport_previous_id: usize,
+    pub h_lport_previous_id_len: i32,
+    pub h_ifdescr_previous: usize,
+    pub h_lport: RawPort,
+    pub h_rports_tqh_first: usize,
+    pub h_rports_tqh_last: usize,
+    pub h_tx_fast: i32,
+}
+
+/// `struct lldpd_hardware`, as laid out by upstream `master` at the time of
+/// writing (commit `df8d729`, after `1.0.22`): a new `h_flags_previous`
+/// (`int`) was inserted right after `h_flags` and before `h_ifindex`,
+/// shifting every field from `h_ifindex` onward (including the embedded
+/// `h_lport` substruct and the `h_rports`/`h_ifalias` pointers `decode_hardware`
+/// reads) by 4 bytes relative to [`RawHardware`]. There is no version
+/// negotiation on this wire protocol, so a fixed struct can't cover both
+/// shapes at once - `decode_hardware` tries [`RawHardware`] first (the long-
+/// stable, tagged-release shape) and this one second.
+///
+/// This is inherently a moving target: if upstream `master` changes this
+/// struct again before its next tagged release, this type will need
+/// updating too (see `tests/real_lldpd.rs`'s `master` CI leg, which is
+/// exactly what would catch that).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RawHardwareWithFlagsPrevious {
+    pub h_entries_tqe_next: usize,
+    pub h_entries_tqe_prev: usize,
+    pub h_cfg: usize,
+    pub h_recv: usize,
+    pub h_sendfd: i32,
+    pub h_mangle: i32,
+    pub h_ops: usize,
+    pub h_data: usize,
+    pub h_timer: usize,
+    pub h_mtu: i32,
+    pub h_flags: i32,
+    pub h_flags_previous: i32,
     pub h_ifindex: i32,
     pub h_ifindex_changed: i32,
     pub h_ifname: [u8; 16], // IFNAMSIZ
@@ -341,6 +409,24 @@ mod tests {
         assert_eq!(size_of::<RawMgmt>() % align_of::<RawMgmt>(), 0);
         assert_eq!(size_of::<RawPort>() % align_of::<RawPort>(), 0);
         assert_eq!(size_of::<RawHardware>() % align_of::<RawHardware>(), 0);
+        assert_eq!(
+            size_of::<RawHardwareWithFlagsPrevious>() % align_of::<RawHardwareWithFlagsPrevious>(),
+            0
+        );
+    }
+
+    /// `h_flags_previous` is a plain `int` inserted where no other field
+    /// needs stricter alignment around it, so every field from `h_ifindex`
+    /// onward really does shift by exactly one `i32`'s worth of bytes - but
+    /// `RawHardware`'s size (632 bytes) already happens to be an exact
+    /// multiple of its own 8-byte alignment (a `usize`/pointer field, and
+    /// `h_lport: RawPort`, both require it), so the compiler pads the *end*
+    /// of the bigger struct up to the next multiple of 8 too: +4 for the new
+    /// field, +4 more trailing padding, not +4 total.
+    #[test]
+    fn hardware_with_flags_previous_is_one_alignment_step_bigger() {
+        assert_eq!(size_of::<RawHardware>(), 632);
+        assert_eq!(size_of::<RawHardwareWithFlagsPrevious>(), 640);
     }
 
     /// This one *is* checked against a real capture (unlike

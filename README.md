@@ -77,19 +77,26 @@ That means it's coupled to, and only known to work with:
   | `< 1.0.14` | no `SET_CHASSIS` in the `hmsg_type` enum -> `GET_INTERFACE` is `5`, not `6` |
   | `< 1.0.20` | no `lldpd_port.p_vlan_advertise_pattern`                            |
   | `< 1.0.21` | no `lldpd_interface.alias` / `lldpd_hardware.h_ifalias`             |
-  | `master`   | unreleased `lldpd_hardware.h_flags_previous` added after `1.0.22`  |
+  | `master`   | unreleased `lldpd_hardware.h_flags_previous`, inserted after `1.0.22` |
 
-  Net effect: **this crate is verified against `lldpd` 1.0.21 and 1.0.22
-  only** (matching this workspace's Yocto-packaged `1.0.22`) - not "any
-  1.0.x", and not yet whatever ships after `1.0.22`. Sending our hardcoded
-  `GET_INTERFACE = 6` to anything older than `1.0.14` doesn't even fail
-  loudly: the daemon just answers a different request (`GET_DEFAULT_PORT`)
-  instead. A struct layout mismatch below `1.0.21` would desync parsing the
-  same way. "Verified" here is not just a claim: CI builds real `lldpd`
-  1.0.21, 1.0.22, and `master` from source and runs this crate against them
-  (`tests/real_lldpd.rs`, see [Testing](#testing)) - `master` is tracked
-  precisely to catch a drift like the `h_flags_previous` row above before
-  it ships in a tagged release.
+  Net effect: **this crate is verified against `lldpd` 1.0.21, 1.0.22, and
+  current `master`** (matching this workspace's Yocto-packaged `1.0.22`,
+  plus tracking upstream ahead of its next tag) - not "any 1.0.x". Sending
+  our hardcoded `GET_INTERFACE = 6` to anything older than `1.0.14` doesn't
+  even fail loudly: the daemon just answers a different request
+  (`GET_DEFAULT_PORT`) instead. A struct layout mismatch below `1.0.21`
+  would desync parsing the same way. "Verified" here is not just a claim:
+  CI builds real `lldpd` 1.0.21, 1.0.22, and `master` from source and runs
+  this crate against them (`tests/real_lldpd.rs`, see
+  [Testing](#testing)). The `h_flags_previous` row above is exactly what
+  that `master` leg caught in practice - `decode_hardware` now tries both
+  the pre- and post-`h_flags_previous` layouts and keeps whichever one
+  actually parses (`src/wire/raw.rs`'s `RawHardware` vs
+  `RawHardwareWithFlagsPrevious`), since there's no version negotiation on
+  the wire to tell it which one a given daemon uses. That's a real fix for
+  a real drift, not a guarantee against every *future* one: if `master`
+  changes shape again before its next tag, that CI leg will fail again
+  until this crate is updated to match.
 - **The build-time feature flags `lldpd` was compiled with.** Several struct
   fields only exist under `ENABLE_DOT1` / `ENABLE_DOT3` / `ENABLE_LLDPMED` /
   `ENABLE_CUSTOM`. This crate assumes `dot1`, `dot3`, `cdp`, `fdp` and

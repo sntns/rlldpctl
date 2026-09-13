@@ -42,12 +42,11 @@ jobs:
       fail-fast: false
       matrix:
         # 1.0.21/1.0.22 are the versions this crate documents support for;
-        # master is tracked to catch upstream drift early (see src/lib.rs).
+        # master is tracked to catch upstream drift early (see src/lib.rs
+        # and src/wire/raw.rs's RawHardwareWithFlagsPrevious) - a real
+        # requirement, not just informational, so this leg is not allowed
+        # to fail either.
         lldpd_ref: ["1.0.21", "1.0.22", "master"]
-    # A master failure is expected drift-tracking signal (e.g. an unreleased
-    # struct field this crate doesn't know about yet), not a release
-    # blocker - don't let it turn the whole workflow red.
-    continue-on-error: ${{ matrix.lldpd_ref == 'master' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

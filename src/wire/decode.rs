@@ -16,8 +16,8 @@ use super::cursor::{
     consume_substruct_marker, read_chunk_pod, read_opt_bytes, read_opt_cstring, Cursor,
 };
 use super::raw::{
-    RawChassis, RawHardware, RawInterface, RawInterfaceList, RawMedLoc, RawMgmt, RawNeighborChange,
-    RawPi, RawPort, RawPpvid, RawVlan,
+    RawChassis, RawHardware, RawHardwareWithFlagsPrevious, RawInterface, RawInterfaceList,
+    RawMedLoc, RawMgmt, RawNeighborChange, RawPi, RawPort, RawPpvid, RawVlan,
 };
 
 /// Chassis pointers are the one place lldpd's wire format can reference the
@@ -227,41 +227,118 @@ fn build_neighbor(
     })
 }
 
-pub(crate) fn decode_hardware(payload: &[u8]) -> Result<InterfaceDetails> {
+/// The fields `decode_hardware` needs from `GET_INTERFACE`'s top-level
+/// struct, independent of which of the two known wire layouts produced them
+/// - see [`super::raw::RawHardware`]/[`super::raw::RawHardwareWithFlagsPrevious`].
+trait HardwareFields {
+    fn h_lport(&self) -> RawPort;
+    fn h_rports_tqh_first(&self) -> usize;
+    fn h_ifalias(&self) -> usize;
+    fn h_ifname(&self) -> [u8; 16];
+    fn h_lladdr(&self) -> [u8; 6];
+}
+
+impl HardwareFields for RawHardware {
+    fn h_lport(&self) -> RawPort {
+        self.h_lport
+    }
+    fn h_rports_tqh_first(&self) -> usize {
+        self.h_rports_tqh_first
+    }
+    fn h_ifalias(&self) -> usize {
+        self.h_ifalias
+    }
+    fn h_ifname(&self) -> [u8; 16] {
+        self.h_ifname
+    }
+    fn h_lladdr(&self) -> [u8; 6] {
+        self.h_lladdr
+    }
+}
+
+impl HardwareFields for RawHardwareWithFlagsPrevious {
+    fn h_lport(&self) -> RawPort {
+        self.h_lport
+    }
+    fn h_rports_tqh_first(&self) -> usize {
+        self.h_rports_tqh_first
+    }
+    fn h_ifalias(&self) -> usize {
+        self.h_ifalias
+    }
+    fn h_ifname(&self) -> [u8; 16] {
+        self.h_ifname
+    }
+    fn h_lladdr(&self) -> [u8; 6] {
+        self.h_lladdr
+    }
+}
+
+fn decode_hardware_as<T: Copy + HardwareFields>(payload: &[u8]) -> Result<InterfaceDetails> {
     let mut cursor = Cursor::new(payload);
-    let raw: RawHardware = read_chunk_pod(&mut cursor)?;
+    let raw: T = read_chunk_pod(&mut cursor)?;
     let mut chassis_cache = ChassisCache::new();
 
+    let h_lport = raw.h_lport();
     consume_substruct_marker(&mut cursor)?;
-    if raw.h_lport.tqe_next != 0 {
+    if h_lport.tqe_next != 0 {
         return Err(Error::Protocol(
             "local port unexpectedly chained to another port".into(),
         ));
     }
-    let local_fields = decode_port_fields(&mut cursor, &raw.h_lport, &mut chassis_cache)?;
+    let local_fields = decode_port_fields(&mut cursor, &h_lport, &mut chassis_cache)?;
 
-    let neighbors = if raw.h_rports_tqh_first != 0 {
+    let neighbors = if raw.h_rports_tqh_first() != 0 {
         decode_neighbor_chain(&mut cursor, &mut chassis_cache)?
     } else {
         Vec::new()
     };
 
-    let alias = read_opt_cstring(&mut cursor, raw.h_ifalias)?;
+    let alias = read_opt_cstring(&mut cursor, raw.h_ifalias())?;
 
-    let name_len = raw
-        .h_ifname
+    let h_ifname = raw.h_ifname();
+    let name_len = h_ifname
         .iter()
         .position(|&b| b == 0)
-        .unwrap_or(raw.h_ifname.len());
-    let name = String::from_utf8_lossy(&raw.h_ifname[..name_len]).into_owned();
+        .unwrap_or(h_ifname.len());
+    let name = String::from_utf8_lossy(&h_ifname[..name_len]).into_owned();
+
+    // The tie-breaker between candidate layouts (see this function's caller):
+    // a wrong layout can, in an unlucky case (e.g. every pointer-shaped field
+    // it happens to land on is zero), finish without ever hitting a
+    // structural error above - silently wrong data instead of a loud one.
+    // See `Cursor::is_exhausted`'s doc comment.
+    if !cursor.is_exhausted() {
+        return Err(Error::Protocol(
+            "message layout mismatch: bytes remain unconsumed after decoding".into(),
+        ));
+    }
 
     Ok(InterfaceDetails {
         name,
         alias,
-        mac_address: raw.h_lladdr,
+        mac_address: raw.h_lladdr(),
         local_chassis: local_fields.chassis,
         neighbors,
     })
+}
+
+/// `GET_INTERFACE`'s response. There is no version negotiation on this wire
+/// protocol (see the crate-level docs), so when the top-level struct's shape
+/// itself has changed between `lldpd` releases (see
+/// [`super::raw::RawHardwareWithFlagsPrevious`]), the only option is to try
+/// each known layout in turn and keep whichever one actually parses: the
+/// long-stable, tagged-release shape first (overwhelmingly the common case),
+/// falling back to the `master`-at-time-of-writing shape second. A message
+/// that matches neither surfaces the *first* attempt's error, since that's
+/// the shape almost every real daemon in the wild actually uses.
+pub(crate) fn decode_hardware(payload: &[u8]) -> Result<InterfaceDetails> {
+    match decode_hardware_as::<RawHardware>(payload) {
+        Ok(details) => Ok(details),
+        Err(legacy_err) => {
+            decode_hardware_as::<RawHardwareWithFlagsPrevious>(payload).map_err(|_| legacy_err)
+        }
+    }
 }
 
 /// `NOTIFICATION`'s payload: `lldpd_neighbor_change`. Its `neighbor` is a
@@ -303,7 +380,8 @@ mod tests {
     use crate::model::NeighborChangeKind;
     use crate::model::{ChassisIdSubtype, PortIdSubtype};
     use crate::wire::raw::{
-        RawHardware, RawInterface, RawInterfaceList, RawNeighborChange, RawPort,
+        RawHardware, RawHardwareWithFlagsPrevious, RawInterface, RawInterfaceList,
+        RawNeighborChange, RawPort,
     };
 
     /// Reinterprets a `#[repr(C)]` `Raw*` value as its own wire bytes - the
@@ -482,6 +560,35 @@ mod tests {
         buf.marker(5);
         // h_rports_tqh_first == 0: no neighbor chain follows.
         // h_ifalias == 0: no alias chunk follows.
+
+        let details = decode_hardware(&buf.into_vec()).unwrap();
+        assert_eq!(details.name, "eth0");
+        assert_eq!(details.alias, None);
+        assert!(details.local_chassis.is_none());
+        assert!(details.neighbors.is_empty());
+    }
+
+    /// Same message as `decode_hardware_local_only_no_neighbors`, but built
+    /// with `RawHardwareWithFlagsPrevious` - the `master`-at-time-of-writing
+    /// layout with `h_flags_previous` inserted (see that type's doc comment).
+    /// `decode_hardware` doesn't know up front which of the two shapes it's
+    /// looking at (there's no version negotiation on the wire), so this
+    /// pins down that it correctly falls back to this layout instead of
+    /// returning the first attempt's decode error.
+    #[test]
+    fn decode_hardware_falls_back_to_the_flags_previous_layout() {
+        let mut buf = Buf::default();
+        buf.chunk_pod(
+            1,
+            &RawHardwareWithFlagsPrevious {
+                h_ifname: *b"eth0\0\0\0\0\0\0\0\0\0\0\0\0",
+                ..Default::default()
+            },
+        );
+        buf.marker(2);
+        buf.marker(3);
+        buf.marker(4);
+        buf.marker(5);
 
         let details = decode_hardware(&buf.into_vec()).unwrap();
         assert_eq!(details.name, "eth0");

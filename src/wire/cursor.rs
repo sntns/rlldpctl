@@ -17,6 +17,22 @@ impl<'a> Cursor<'a> {
         Self { buf, pos: 0 }
     }
 
+    /// Whether every byte of the message has been read. `transport::request`
+    /// always hands the decoder a payload slice of exactly the length lldpd
+    /// declared (see its doc comment) - no trailing bytes beyond the last
+    /// real chunk - so a fully-decoded, well-formed message should leave
+    /// nothing unread. This is the tie-breaker
+    /// [`super::decode::decode_hardware`] needs when trying more than one
+    /// possible struct layout: a wrong layout can, in an unlucky case,
+    /// finish without hitting any of the structural error checks elsewhere
+    /// in this module (e.g. every pointer-shaped field it happens to read
+    /// is zero) while still leaving bytes unconsumed - silently wrong data
+    /// instead of a loud error. Checking this after a full decode attempt
+    /// catches that.
+    pub(super) fn is_exhausted(&self) -> bool {
+        self.pos == self.buf.len()
+    }
+
     fn need(&self, n: usize) -> Result<()> {
         if self
             .pos
