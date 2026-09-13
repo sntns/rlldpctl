@@ -12,6 +12,7 @@ use rlldpctl::{AsyncClient, Error};
 
 const PTR_SIZE: usize = std::mem::size_of::<usize>();
 const GET_INTERFACES: i32 = 3;
+const SET_PORT: i32 = 8;
 
 fn temp_socket_path(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!(
@@ -115,6 +116,68 @@ async fn interfaces_round_trips_over_a_real_socket() {
     let interfaces = client.interfaces().await.unwrap();
     assert_eq!(interfaces.len(), 1);
     assert_eq!(interfaces[0].name, "eth0");
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn set_port_description_sends_the_real_wire_bytes_and_succeeds_on_an_empty_ack() {
+    let path = temp_socket_path("set-port-description");
+    let _ = std::fs::remove_file(&path);
+    let std_listener = StdUnixListener::bind(&path).unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::UnixListener::from_std(std_listener).unwrap();
+
+    // See `tests/integration.rs`'s sync twin of this test for where this
+    // fixture comes from.
+    let expected_payload: &[u8] = b"\x01\x00\x00\x00\x00\x00\x00\x00\x96\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x15\x00\x00\x00\x00\x00\x00\x00\x65\x74\x68\x30\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x1e\x00\x00\x00\x00\x00\x00\x00\x74\x65\x73\x74\x2d\x64\x65\x73\x63\x2d\x58\x59\x5a\x00";
+
+    let server = tokio::spawn({
+        let path = path.clone();
+        async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (ty, req_payload) = read_frame(&mut stream).await;
+            assert_eq!(ty, SET_PORT);
+            assert_eq!(req_payload, expected_payload);
+
+            stream.write_all(&frame(SET_PORT, &[])).await.unwrap();
+            let _ = std::fs::remove_file(&path);
+        }
+    });
+
+    let mut client = AsyncClient::connect_to(&path).await.unwrap();
+    client
+        .set_port_description("eth0", "test-desc-XYZ")
+        .await
+        .unwrap();
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn set_port_description_for_an_unknown_interface_surfaces_as_request_rejected() {
+    let path = temp_socket_path("set-port-description-rejected");
+    let _ = std::fs::remove_file(&path);
+    let std_listener = StdUnixListener::bind(&path).unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::UnixListener::from_std(std_listener).unwrap();
+
+    let server = tokio::spawn({
+        let path = path.clone();
+        async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (_ty, _payload) = read_frame(&mut stream).await;
+            stream.write_all(&frame(0, &[])).await.unwrap();
+            let _ = std::fs::remove_file(&path);
+        }
+    });
+
+    let mut client = AsyncClient::connect_to(&path).await.unwrap();
+    let err = client
+        .set_port_description("does-not-exist", "x")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::RequestRejected));
 
     server.await.unwrap();
 }

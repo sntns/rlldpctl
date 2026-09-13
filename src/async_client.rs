@@ -75,6 +75,14 @@ impl AsyncClient {
         &self.socket_path
     }
 
+    /// Overrides a local port's description (`SET_PORT`), leaving every
+    /// other setting on that port untouched. See [`crate::Client::set_port_description`].
+    pub async fn set_port_description(&mut self, ifname: &str, description: &str) -> Result<()> {
+        let request_payload = wire::encode_set_port_description_request(ifname, description);
+        request(&mut self.stream, HmsgType::SetPort, &request_payload).await?;
+        Ok(())
+    }
+
     /// Subscribes to live neighbor-change notifications (`SUBSCRIBE`),
     /// returning an [`AsyncSubscription`]. Consumes the client for the same
     /// reason [`crate::Client::subscribe`] does - see its docs.
@@ -165,6 +173,7 @@ fn assert_futures_are_send() {
         is_send(client.interfaces());
         is_send(client.interface("eth0"));
         is_send(client.all_interfaces());
+        is_send(client.set_port_description("eth0", "test"));
         is_send(subscription.next_change());
         is_send(client.subscribe());
     }

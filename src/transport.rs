@@ -20,6 +20,7 @@ pub enum HmsgType {
     None = 0,
     GetInterfaces = 3,
     GetInterface = 6,
+    SetPort = 8,
     Subscribe = 9,
     Notification = 10,
 }

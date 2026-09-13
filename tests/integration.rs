@@ -18,6 +18,7 @@ const PTR_SIZE: usize = std::mem::size_of::<usize>();
 /// Message types from upstream `src/ctl.h`'s `enum hmsg_type` that this test
 /// needs to speak.
 const GET_INTERFACES: i32 = 3;
+const SET_PORT: i32 = 8;
 
 fn temp_socket_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("rlldpctl-test-{name}-{}.sock", std::process::id()))
@@ -147,6 +148,70 @@ fn interface_not_found_surfaces_as_request_rejected() {
 
     let mut client = Client::connect_to(&path).unwrap();
     let err = client.interface("does-not-exist").unwrap_err();
+    assert!(matches!(err, Error::RequestRejected));
+
+    server.join().unwrap();
+}
+
+#[test]
+fn set_port_description_sends_the_real_wire_bytes_and_succeeds_on_an_empty_ack() {
+    let path = temp_socket_path("set-port-description");
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).unwrap();
+
+    // Captured via `strace -x -s 4096 -e trace=write -f lldpcli configure
+    // ports eth0 lldp portdescription 'test-desc-XYZ'` against a real `lldpd
+    // 1.0.22` - the payload half of the same fixture
+    // `wire::encode_tests::set_port_description_request_matches_a_real_lldpd_capture`
+    // asserts against directly; this test instead proves the *transport*
+    // (`Client::set_port_description`) sends exactly those bytes end to end,
+    // and that a real successful ack (`SET_PORT` type, empty payload -
+    // confirmed by the same capture) is treated as success.
+    let expected_payload: &[u8] = b"\x01\x00\x00\x00\x00\x00\x00\x00\x96\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x15\x00\x00\x00\x00\x00\x00\x00\x65\x74\x68\x30\x00\x00\x00\x00\x03\x00\x00\x00\x00\x00\x00\x00\x1e\x00\x00\x00\x00\x00\x00\x00\x74\x65\x73\x74\x2d\x64\x65\x73\x63\x2d\x58\x59\x5a\x00";
+
+    let server = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (ty, req_payload) = read_frame(&mut stream);
+            assert_eq!(ty, SET_PORT);
+            assert_eq!(req_payload, expected_payload);
+
+            // A successful SET_PORT acks with its own type and an empty
+            // payload (confirmed by the same real capture).
+            stream.write_all(&frame(SET_PORT, &[])).unwrap();
+            let _ = std::fs::remove_file(&path);
+        }
+    });
+
+    let mut client = Client::connect_to(&path).unwrap();
+    client
+        .set_port_description("eth0", "test-desc-XYZ")
+        .unwrap();
+
+    server.join().unwrap();
+}
+
+#[test]
+fn set_port_description_for_an_unknown_interface_surfaces_as_request_rejected() {
+    let path = temp_socket_path("set-port-description-rejected");
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path).unwrap();
+
+    let server = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let (_ty, _payload) = read_frame(&mut stream);
+            stream.write_all(&frame(0, &[])).unwrap();
+            let _ = std::fs::remove_file(&path);
+        }
+    });
+
+    let mut client = Client::connect_to(&path).unwrap();
+    let err = client
+        .set_port_description("does-not-exist", "x")
+        .unwrap_err();
     assert!(matches!(err, Error::RequestRejected));
 
     server.join().unwrap();

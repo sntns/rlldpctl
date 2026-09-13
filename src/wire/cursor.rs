@@ -114,6 +114,18 @@ pub(super) fn read_pod<T: Copy>(bytes: &[u8]) -> Result<T> {
     Ok(unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) })
 }
 
+/// The encode-side counterpart to [`read_pod`]: the raw bytes of `value`, for
+/// writing into an outbound request's struct-chunk content (see
+/// `wire::mod::encode_set_port_description_request`). Same safety invariant
+/// as `read_pod` applies in reverse - only call this with a `T` that is
+/// `Copy` and composed solely of plain integers and byte arrays (true of
+/// every type in [`super::raw`]), so there's no uninitialized or
+/// otherwise-invalid data among the bytes read out.
+pub(super) fn pod_bytes<T: Copy>(value: &T) -> Vec<u8> {
+    let ptr = (value as *const T).cast::<u8>();
+    unsafe { std::slice::from_raw_parts(ptr, std::mem::size_of::<T>()) }.to_vec()
+}
+
 /// Reads the next chunk's header and interprets exactly `size_of::<T>()`
 /// bytes right after it as a `T` (used for every "real", non-embedded
 /// struct: the top-level message body, and anything reached through a

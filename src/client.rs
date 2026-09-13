@@ -83,6 +83,18 @@ impl Client {
         &self.socket_path
     }
 
+    /// Overrides a local port's description (`SET_PORT`), leaving every
+    /// other setting on that port untouched.
+    ///
+    /// `ifname` should be a name as returned by [`Client::interfaces`]; an
+    /// interface lldpd doesn't know about surfaces as
+    /// [`crate::Error::RequestRejected`], the same as [`Client::interface`].
+    pub fn set_port_description(&mut self, ifname: &str, description: &str) -> Result<()> {
+        let request_payload = wire::encode_set_port_description_request(ifname, description);
+        transport::request(&mut self.stream, HmsgType::SetPort, &request_payload)?;
+        Ok(())
+    }
+
     /// Subscribes to live neighbor-change notifications (`SUBSCRIBE`),
     /// returning a [`Subscription`] you can iterate for [`NeighborChange`]s.
     ///

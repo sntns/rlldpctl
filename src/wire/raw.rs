@@ -294,6 +294,35 @@ pub struct RawNeighborChange {
     pub neighbor: usize,
 }
 
+/// `struct lldpd_port_set`: request body of a `SET_PORT` message, overriding
+/// one local port's settings (this crate only ever populates `ifname` and
+/// `local_descr` - see `wire::encode_set_port_description_request`). `custom`/
+/// `custom_list_clear`/`custom_tlv_op` (`ENABLE_CUSTOM`) are omitted to match
+/// this crate's `custom`-off build assumption (see the module docs above);
+/// their presence would otherwise change every field offset from
+/// `med_policy` onward.
+///
+/// Confirmed byte-for-byte (80 bytes total, including the implicit
+/// `#[repr(C)]` padding `rustc` inserts between `vlan_tx_enabled` and
+/// `med_policy` to keep the latter's `usize` 8-byte-aligned - the same way a
+/// C compiler would) against real `lldpd 1.0.22` wire traffic, captured via
+/// `strace` on `lldpcli configure ports <if> lldp portdescription <text>`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RawPortSet {
+    pub ifname: usize,
+    pub local_id: usize,
+    pub local_descr: usize,
+    pub vlan_advertise_pattern: usize,
+    pub rxtx: i32,
+    pub vlan_tx_tag: i32,
+    pub vlan_tx_enabled: i32,
+    pub med_policy: usize,
+    pub med_location: usize,
+    pub med_power: usize,
+    pub dot3_power: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +341,17 @@ mod tests {
         assert_eq!(size_of::<RawMgmt>() % align_of::<RawMgmt>(), 0);
         assert_eq!(size_of::<RawPort>() % align_of::<RawPort>(), 0);
         assert_eq!(size_of::<RawHardware>() % align_of::<RawHardware>(), 0);
+    }
+
+    /// This one *is* checked against a real capture (unlike
+    /// `sizes_are_aligned` above): a real `SET_PORT` request's declared chunk
+    /// sizes only add up correctly (see
+    /// `wire::mod::encode_tests::set_port_description_request_matches_a_real_lldpd_capture`)
+    /// if this struct is exactly the 80 bytes `lldpd 1.0.22` (built the way
+    /// this crate assumes) actually uses.
+    #[test]
+    fn port_set_is_eighty_bytes() {
+        assert_eq!(size_of::<RawPortSet>(), 80);
     }
 
     fn align_of<T>() -> usize {

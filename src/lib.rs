@@ -65,11 +65,13 @@
 //!
 //! ## Scope
 //!
-//! v1 implements four requests: `GET_INTERFACES` (list interfaces),
-//! `GET_INTERFACE` (one interface's local info + discovered neighbors), and
+//! v1 implements five requests: `GET_INTERFACES` (list interfaces),
+//! `GET_INTERFACE` (one interface's local info + discovered neighbors),
 //! `SUBSCRIBE`/`NOTIFICATION` (a live feed of neighbor changes, via
-//! [`Client::subscribe`] and [`Subscription`]). Nothing that changes daemon
-//! state (`SET_PORT`, `SET_CONFIG`, ...) is implemented.
+//! [`Client::subscribe`] and [`Subscription`]), and `SET_PORT` (currently
+//! just overriding a port's description - see
+//! [`Client::set_port_description`]). Nothing else that changes daemon state
+//! (`SET_CHASSIS`, `SET_CONFIG`, ...) is implemented.
 //!
 //! ## Async
 //!
