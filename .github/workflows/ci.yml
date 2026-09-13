@@ -34,3 +34,32 @@ jobs:
 
       - name: Run tarpaulin
         run: cargo tarpaulin --features tokio --out Xml
+
+  real-lldpd:
+    name: Integration tests against real lldpd (${{ matrix.lldpd_ref }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 1.0.21/1.0.22 are the versions this crate documents support for;
+        # master is tracked to catch upstream drift early (see src/lib.rs).
+        lldpd_ref: ["1.0.21", "1.0.22", "master"]
+    # A master failure is expected drift-tracking signal (e.g. an unreleased
+    # struct field this crate doesn't know about yet), not a release
+    # blocker - don't let it turn the whole workflow red.
+    continue-on-error: ${{ matrix.lldpd_ref == 'master' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build test image (lldpd ${{ matrix.lldpd_ref }})
+        run: |
+          docker build \
+            --build-arg LLDPD_REF=${{ matrix.lldpd_ref }} \
+            -t rlldpctl-real-lldpd:${{ matrix.lldpd_ref }} \
+            -f tests/real_lldpd/Dockerfile .
+
+      - name: Run integration tests against real lldpd ${{ matrix.lldpd_ref }}
+        run: |
+          docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW \
+            rlldpctl-real-lldpd:${{ matrix.lldpd_ref }}

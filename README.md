@@ -85,7 +85,11 @@ That means it's coupled to, and only known to work with:
   `GET_INTERFACE = 6` to anything older than `1.0.14` doesn't even fail
   loudly: the daemon just answers a different request (`GET_DEFAULT_PORT`)
   instead. A struct layout mismatch below `1.0.21` would desync parsing the
-  same way.
+  same way. "Verified" here is not just a claim: CI builds real `lldpd`
+  1.0.21, 1.0.22, and `master` from source and runs this crate against them
+  (`tests/real_lldpd.rs`, see [Testing](#testing)) - `master` is tracked
+  precisely to catch a drift like the `h_flags_previous` row above before
+  it ships in a tagged release.
 - **The build-time feature flags `lldpd` was compiled with.** Several struct
   fields only exist under `ENABLE_DOT1` / `ENABLE_DOT3` / `ENABLE_LLDPMED` /
   `ENABLE_CUSTOM`. This crate assumes `dot1`, `dot3`, `cdp`, `fdp` and
@@ -147,6 +151,26 @@ plain `async fn next_change`, not a `futures::Stream` - wrap it with
 - `examples/show_neighbors.rs`/`examples/watch_neighbors.rs` and their
   `_async` counterparts talk to a real, running `lldpd` - not run in CI, but
   useful for a manual sanity check on real hardware.
+- `tests/real_lldpd.rs` is the one exception to "no live `lldpd` required":
+  it runs a **real** `lldpd`, not a fake one, and is what backs the version
+  support claim above. CI (`.github/workflows/ci.yml`'s `real-lldpd` job)
+  builds `lldpd` from source at `1.0.21`, `1.0.22`, and `master`
+  (`tests/real_lldpd/Dockerfile`, using upstream's own build recipe), starts
+  two independent instances talking over a real veth pair
+  (`tests/real_lldpd/entrypoint.sh` - not a Docker bridge network, which
+  would silently drop LLDP's reserved multicast destination), and checks
+  that this crate's `Client`/`AsyncClient` decode each side's neighbor data
+  to match the peer's real MAC address read straight from the kernel. This
+  test file no-ops outside that container (no root, no real `lldpd`, no
+  veth needed for a plain local `cargo test`). To run it yourself:
+
+  ```sh
+  docker build --build-arg LLDPD_REF=1.0.22 -t rlldpctl-real-lldpd:1.0.22 \
+    -f tests/real_lldpd/Dockerfile .
+  docker run --rm --cap-add=NET_ADMIN --cap-add=NET_RAW rlldpctl-real-lldpd:1.0.22
+  ```
+
+  Swap `LLDPD_REF` for `1.0.21` or `master` to check another version.
 
 ```sh
 cargo test
